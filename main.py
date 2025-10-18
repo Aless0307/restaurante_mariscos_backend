@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Solo importar los routers de MongoDB que necesitas
-from app.routers import menu_mongo, auth_mongo, images, restaurante
+from app.routers import menu_mongo, auth_mongo, images, restaurante, admin
 from app.routers import secciones_imagenes
 
 app = FastAPI(
@@ -50,8 +50,11 @@ app.add_middleware(
 
 # Incluir solo routers de MongoDB para producción
 app.include_router(auth_mongo.router, prefix="/api/auth", tags=["Autenticación MongoDB"])
+app.include_router(auth_mongo.router, prefix="/api/auth-mongo", tags=["Autenticación MongoDB - Legacy"])
 app.include_router(menu_mongo.router, prefix="/api/menu", tags=["Menú MongoDB"])
+app.include_router(menu_mongo.router, prefix="/api/mongo/menu", tags=["Menú MongoDB - Legacy"])
 app.include_router(restaurante.router, prefix="/api/restaurante", tags=["Restaurante MongoDB"])
+app.include_router(admin.router, prefix="/api/admin", tags=["Administración MongoDB"])
 app.include_router(images.router, prefix="/api", tags=["Imágenes Públicas"])
 app.include_router(secciones_imagenes.router, tags=["Secciones de Imágenes"])
 
