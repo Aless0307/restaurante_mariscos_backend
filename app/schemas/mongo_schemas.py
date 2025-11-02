@@ -51,6 +51,8 @@ class RestauranteInfoUpdate(BaseModel):
     nombre: Optional[str] = None
     descripcion_corta: Optional[str] = None
     descripcion_larga: Optional[str] = None
+    slogan: Optional[str] = None  # NUEVO: Slogan principal del restaurante
+    slogan_subtitulo: Optional[str] = None  # NUEVO: Subtítulo del slogan
     telefono: Optional[str] = None
     whatsapp: Optional[str] = None
     email: Optional[str] = None
@@ -212,6 +214,7 @@ class ActualizarItemMenu(BaseModel):
     disponible: Optional[bool] = None
     imagen_url: Optional[str] = None
     imagen_id: Optional[str] = None
+    categoria_id: Optional[str] = None  # Permitir cambiar de categoría
 
 class CrearItemMenu(BaseModel):
     nombre: str

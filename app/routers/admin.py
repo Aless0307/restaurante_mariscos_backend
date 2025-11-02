@@ -6,12 +6,21 @@ from app.mongo_database import get_mongo_db
 from app.schemas.auth_schemas import UsuarioMongo
 from app.schemas.mongo_schemas import *
 from app.services.auth_mongo_simple import AuthService
+from app.cache import cache
 import gridfs
 from bson import ObjectId
 import io
 from PIL import Image
 
 router = APIRouter()
+
+# Helper para limpiar caché del menú
+def limpiar_cache_menu():
+    """Limpia todo el caché relacionado con el menú"""
+    cache.delete("menu_publico_completo")
+    cache.invalidate_pattern("menu_")
+    cache.invalidate_pattern("categoria_")
+    print("🗑️ Caché del menú limpiado completamente")
 
 # =============================================================================
 # ENDPOINTS DE GESTIÓN DE INFORMACIÓN DEL RESTAURANTE
@@ -43,6 +52,8 @@ async def obtener_info_restaurante(
             "nombre": "Dario Restaurante",
             "descripcion_corta": "Los mariscos más frescos del mar, preparados con pasión y tradición desde 1969",
             "descripcion_larga": "En Dario Restaurante, llevamos más de dos décadas dedicados a ofrecer la mejor experiencia gastronómica de mariscos. Nuestra pasión por los productos del mar nos ha convertido en el destino favorito para los amantes de los mariscos frescos.",
+            "slogan": "Donde cada plato cuenta una historia del mar",
+            "slogan_subtitulo": "Restaurante Dario, tradición veracruzana desde 1969",
             "telefono": "+52 229 109 6048",
             "whatsapp": "522291096048",
             "email": "restaurantedario1@outlook.com",
@@ -218,7 +229,7 @@ async def actualizar_info_restaurante(
         print(f"📝 DEBUG: Datos recibidos para actualizar: {update_data}")
         
         # Separar campos por colección
-        campos_restaurante = ["nombre", "descripcion_corta", "descripcion_larga", "logo_url", "imagen_banner_url", "imagen_sobre_nosotros_url", "anos_experiencia", "clientes_satisfechos", "platos_unicos"]
+        campos_restaurante = ["nombre", "descripcion_corta", "descripcion_larga", "slogan", "slogan_subtitulo", "logo_url", "imagen_banner_url", "imagen_sobre_nosotros_url", "anos_experiencia", "clientes_satisfechos", "platos_unicos"]
         campos_contacto = ["telefono", "whatsapp", "email", "direccion", "horarios", "facebook", "instagram", "website"]
         
         # Datos para restaurante_info
@@ -255,6 +266,10 @@ async def actualizar_info_restaurante(
             else:
                 result = db.contacto_info.insert_one(datos_contacto)
                 print(f"✅ DEBUG: contacto_info creado con ID: {result.inserted_id}")
+        
+        # Limpiar caché de información pública
+        cache.delete("restaurante_info_publica")
+        print("🗑️ Caché de información pública limpiado")
         
         return {
             "message": "Información del restaurante actualizada exitosamente",
@@ -371,6 +386,9 @@ async def crear_categoria(
         
         result = db.categorias_menu.insert_one(categoria_dict)
         
+        # Limpiar caché del menú
+        limpiar_cache_menu()
+        
         return {
             "message": "Categoría creada exitosamente",
             "id": str(result.inserted_id)
@@ -412,6 +430,9 @@ async def actualizar_categoria(
                     detail="No se realizaron cambios"
                 )
         
+        # Limpiar caché del menú
+        limpiar_cache_menu()
+        
         return {"message": "Categoría actualizada exitosamente"}
     except Exception as e:
         raise HTTPException(
@@ -451,6 +472,9 @@ async def eliminar_categoria(
             )
         
         print(f"✅ DEBUG: Categoría '{categoria['nombre']}' eliminada completamente")
+        
+        # Limpiar caché del menú
+        limpiar_cache_menu()
         
         return {
             "message": "Categoría eliminada exitosamente",
@@ -535,6 +559,9 @@ async def crear_item(
         
         print(f"✅ DEBUG: Item creado con ID: {result.inserted_id}")
         
+        # Limpiar caché del menú
+        limpiar_cache_menu()
+        
         return {"message": "Item creado exitosamente", "item_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(
@@ -550,53 +577,147 @@ async def actualizar_item(
     current_user: UsuarioMongo = Depends(AuthService.get_current_admin_user),
     db = Depends(get_mongo_db)
 ):
-    """Actualizar item existente"""
+    """Actualizar item existente - Busca en ambos almacenamientos y permite cambio de categoría"""
     try:
-        # Verificar que la categoría existe
-        categoria = db.categorias_menu.find_one({"_id": ObjectId(categoria_id)})
-        if not categoria:
+        print(f"🔄 DEBUG: Actualizando item '{item_nombre}' en categoría {categoria_id}")
+        
+        # Verificar que la categoría actual existe
+        categoria_actual = db.categorias_menu.find_one({"_id": ObjectId(categoria_id)})
+        if not categoria_actual:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Categoría no encontrada"
-            )
-        
-        items = categoria.get("items", [])
-        item_index = -1
-        
-        # Buscar el item por nombre
-        for i, item_actual in enumerate(items):
-            if item_actual.get("nombre") == item_nombre:
-                item_index = i
-                break
-        
-        if item_index == -1:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Item no encontrado"
+                detail="Categoría actual no encontrada"
             )
         
         # Preparar datos para actualizar
         update_data = {k: v for k, v in item.dict().items() if v is not None}
         update_data["fecha_actualizacion"] = datetime.now()
         
-        # Actualizar el item específico
-        set_operations = {}
-        for key, value in update_data.items():
-            set_operations[f"items.{item_index}.{key}"] = value
+        # Verificar si se está cambiando de categoría
+        nueva_categoria_id = update_data.pop("categoria_id", None)
+        cambio_categoria = nueva_categoria_id and nueva_categoria_id != categoria_id
         
-        result = db.categorias_menu.update_one(
-            {"_id": ObjectId(categoria_id)},
-            {"$set": set_operations}
-        )
+        if cambio_categoria:
+            print(f"🔀 DEBUG: Cambiando item de categoría {categoria_id} a {nueva_categoria_id}")
+            
+            # Verificar que la nueva categoría existe
+            nueva_categoria = db.categorias_menu.find_one({"_id": ObjectId(nueva_categoria_id)})
+            if not nueva_categoria:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Nueva categoría no encontrada"
+                )
+            
+            # Actualizar categoria_nombre con el nombre de la nueva categoría
+            update_data["categoria_nombre"] = nueva_categoria["nombre"]
         
-        if result.modified_count == 0:
+        print(f"📝 DEBUG: Datos a actualizar: {update_data}")
+        
+        items_actualizados = 0
+        
+        # 1. Buscar y actualizar en la colección items_menu
+        item_en_coleccion = db.items_menu.find_one({
+            "categoria_id": ObjectId(categoria_id),
+            "nombre": item_nombre
+        })
+        
+        if item_en_coleccion:
+            print(f"✅ DEBUG: Item encontrado en colección items_menu")
+            
+            if cambio_categoria:
+                # Si cambia de categoría, actualizar el categoria_id
+                update_data["categoria_id"] = ObjectId(nueva_categoria_id)
+            
+            result = db.items_menu.update_one(
+                {"_id": item_en_coleccion["_id"]},
+                {"$set": update_data}
+            )
+            if result.modified_count > 0:
+                items_actualizados += 1
+                print(f"✅ DEBUG: Item actualizado en colección items_menu")
+        else:
+            print(f"⚠️ DEBUG: Item NO encontrado en colección items_menu")
+        
+        # 2. Buscar y actualizar/mover en el array embebido de la categoría
+        items = categoria_actual.get("items", [])
+        item_index = -1
+        item_encontrado = None
+        
+        for i, item_actual in enumerate(items):
+            if item_actual.get("nombre") == item_nombre:
+                item_index = i
+                item_encontrado = item_actual.copy()
+                break
+        
+        if item_index != -1:
+            print(f"✅ DEBUG: Item encontrado en array embebido en índice {item_index}")
+            
+            if cambio_categoria:
+                # Mover item a nueva categoría en array embebido
+                print(f"🔀 DEBUG: Moviendo item en arrays embebidos")
+                
+                # Actualizar datos del item
+                item_encontrado.update(update_data)
+                
+                # Eliminar de categoría actual
+                db.categorias_menu.update_one(
+                    {"_id": ObjectId(categoria_id)},
+                    {"$pull": {"items": {"nombre": item_nombre}}}
+                )
+                
+                # Agregar a nueva categoría
+                db.categorias_menu.update_one(
+                    {"_id": ObjectId(nueva_categoria_id)},
+                    {"$push": {"items": item_encontrado}}
+                )
+                
+                items_actualizados += 1
+                print(f"✅ DEBUG: Item movido en arrays embebidos")
+            else:
+                # Solo actualizar en la misma categoría
+                set_operations = {}
+                for key, value in update_data.items():
+                    set_operations[f"items.{item_index}.{key}"] = value
+                
+                result = db.categorias_menu.update_one(
+                    {"_id": ObjectId(categoria_id)},
+                    {"$set": set_operations}
+                )
+                if result.modified_count > 0:
+                    items_actualizados += 1
+                    print(f"✅ DEBUG: Item actualizado en array embebido")
+        else:
+            print(f"⚠️ DEBUG: Item NO encontrado en array embebido")
+        
+        # Verificar si se actualizó algo
+        if items_actualizados == 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No se realizaron cambios"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Item '{item_nombre}' no encontrado en la categoría"
             )
         
-        return {"message": "Item actualizado exitosamente"}
+        # Limpiar caché del menú
+        limpiar_cache_menu()
+        
+        print(f"🎉 DEBUG: Total items actualizados: {items_actualizados}")
+        
+        mensaje = "Item actualizado exitosamente"
+        if cambio_categoria:
+            mensaje = f"Item movido a nueva categoría y actualizado exitosamente"
+        
+        return {
+            "message": mensaje,
+            "items_actualizados": items_actualizados,
+            "item_nombre": item_nombre,
+            "categoria_cambio": cambio_categoria
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"❌ DEBUG: Error al actualizar item: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al actualizar item: {str(e)}"
@@ -666,6 +787,9 @@ async def eliminar_item(
             )
         
         print(f"✅ DEBUG: Total items eliminados: {items_eliminados}")
+        
+        # Limpiar caché del menú
+        limpiar_cache_menu()
         
         return {
             "message": "Item eliminado exitosamente",

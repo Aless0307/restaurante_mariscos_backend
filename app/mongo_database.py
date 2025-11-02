@@ -22,22 +22,42 @@ class MongoDB:
             cls._instance = super(MongoDB, cls).__new__(cls)
         return cls._instance
     
-    def __init__(self):
+    def _ensure_connected(self):
+        """Asegurar que la conexión esté establecida (lazy connection)"""
         if self._client is None:
-            self._client = MongoClient(MONGO_URI)
+            # Configuración optimizada de MongoDB con connection pooling y timeouts
+            self._client = MongoClient(
+                MONGO_URI,
+                maxPoolSize=50,  # Máximo de conexiones en el pool
+                minPoolSize=10,  # Mínimo de conexiones siempre abiertas
+                maxIdleTimeMS=45000,  # Tiempo máximo de inactividad
+                serverSelectionTimeoutMS=10000,  # Timeout para seleccionar servidor (10s)
+                connectTimeoutMS=10000,  # Timeout para conectar (10s)
+                socketTimeoutMS=20000,  # Timeout para operaciones (20s)
+                retryWrites=True,  # Reintentar escrituras automáticamente
+                retryReads=True,  # Reintentar lecturas automáticamente
+                # Permitir lecturas desde secundarios para mejor disponibilidad
+                readPreference='secondaryPreferred',
+                # Concern de escritura para mejor rendimiento
+                w='majority',
+                wtimeoutMS=10000,
+            )
             self._db = self._client[DATABASE_NAME]
             self._fs = gridfs.GridFS(self._db)
     
     @property
     def client(self):
+        self._ensure_connected()
         return self._client
     
     @property
     def db(self):
+        self._ensure_connected()
         return self._db
     
     @property
     def fs(self):
+        self._ensure_connected()
         return self._fs
     
     def close(self):

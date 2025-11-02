@@ -14,28 +14,39 @@ router = APIRouter()
 
 @router.get("/menu-completo", response_model=MenuCompleto)
 async def get_menu_completo(db = Depends(get_mongodb)):
-    """Obtener el menú completo con todas las categorías e items"""
+    """Obtener el menú completo con todas las categorías e items - OPTIMIZADO"""
     try:
-        # Obtener todas las categorías activas
-        categorias_cursor = db.categorias_menu.find(
-            {"activo": True}
-        ).sort("orden", 1)
+        # Usar agregación para hacer JOIN en una sola consulta
+        pipeline = [
+            {"$match": {"activo": True}},
+            {"$sort": {"orden": 1}},
+            {
+                "$lookup": {
+                    "from": "items_menu",
+                    "localField": "_id",
+                    "foreignField": "categoria_id",
+                    "as": "items"
+                }
+            },
+            {
+                "$addFields": {
+                    "items": {
+                        "$sortArray": {
+                            "input": "$items",
+                            "sortBy": {"orden": 1}
+                        }
+                    }
+                }
+            }
+        ]
         
+        categorias_cursor = db.categorias_menu.aggregate(pipeline)
         categorias = []
         total_items = 0
         
         for categoria_doc in categorias_cursor:
             categoria = serialize_doc(categoria_doc)
-            
-            # Obtener items de esta categoría
-            items_cursor = db.items_menu.find(
-                {"categoria_id": ObjectId(categoria["_id"])}
-            ).sort("orden", 1)
-            
-            items = [serialize_doc(item) for item in items_cursor]
-            categoria["items"] = items
-            total_items += len(items)
-            
+            total_items += len(categoria.get("items", []))
             categorias.append(categoria)
         
         return {
@@ -56,30 +67,50 @@ async def get_categorias(
     activas_solo: bool = True,
     db = Depends(get_mongodb)
 ):
-    """Obtener categorías del menú"""
+    """Obtener categorías del menú - OPTIMIZADO"""
     try:
-        # Filtros
-        filtros = {}
-        if activas_solo:
-            filtros["activo"] = True
-        
-        # Obtener categorías
-        categorias_cursor = db.categorias_menu.find(filtros).sort("orden", 1)
-        categorias = []
-        
-        for categoria_doc in categorias_cursor:
-            categoria = serialize_doc(categoria_doc)
+        if incluir_items:
+            # Usar agregación cuando se incluyen items
+            pipeline = [
+                {"$sort": {"orden": 1}},
+                {
+                    "$lookup": {
+                        "from": "items_menu",
+                        "localField": "_id",
+                        "foreignField": "categoria_id",
+                        "as": "items"
+                    }
+                },
+                {
+                    "$addFields": {
+                        "items": {
+                            "$sortArray": {
+                                "input": "$items",
+                                "sortBy": {"orden": 1}
+                            }
+                        }
+                    }
+                }
+            ]
             
-            if incluir_items:
-                # Obtener items de esta categoría
-                items_cursor = db.items_menu.find(
-                    {"categoria_id": ObjectId(categoria["_id"])}
-                ).sort("orden", 1)
-                categoria["items"] = [serialize_doc(item) for item in items_cursor]
-            else:
+            if activas_solo:
+                pipeline.insert(0, {"$match": {"activo": True}})
+            
+            categorias_cursor = db.categorias_menu.aggregate(pipeline)
+            categorias = [serialize_doc(doc) for doc in categorias_cursor]
+        else:
+            # Sin items, usar find simple
+            filtros = {}
+            if activas_solo:
+                filtros["activo"] = True
+            
+            categorias_cursor = db.categorias_menu.find(filtros).sort("orden", 1)
+            categorias = []
+            
+            for categoria_doc in categorias_cursor:
+                categoria = serialize_doc(categoria_doc)
                 categoria["items"] = []
-            
-            categorias.append(categoria)
+                categorias.append(categoria)
         
         return categorias
         

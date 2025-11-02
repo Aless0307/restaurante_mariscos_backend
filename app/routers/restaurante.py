@@ -5,6 +5,7 @@ from app.schemas.mongo_schemas import (
     RestauranteInfo, ContactoInfo, CaracteristicaRestaurante, 
     ServicioRestaurante, DatosRestauranteCompleto
 )
+from app.cache import cache
 
 router = APIRouter()
 
@@ -82,7 +83,14 @@ async def get_servicios(db = Depends(get_mongodb)):
 
 @router.get("/info-publica")
 async def get_info_publica(db = Depends(get_mongodb)):
-    """Obtener información pública del restaurante para el frontend"""
+    """Obtener información pública del restaurante para el frontend - CON CACHÉ"""
+    
+    # Intentar obtener del caché primero
+    cache_key = "restaurante_info_publica"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return cached_result
+    
     try:
         # Obtener información básica del restaurante
         restaurante_info = db.restaurante_info.find_one()
@@ -97,6 +105,8 @@ async def get_info_publica(db = Depends(get_mongodb)):
             "nombre": "Dario Restaurante",
             "descripcion_corta": "Los mariscos más frescos del mar, preparados con pasión y tradición desde 1969",
             "descripcion_larga": "En Dario Restaurante, llevamos más de dos décadas dedicados a ofrecer la mejor experiencia gastronómica de mariscos. Nuestra pasión por los productos del mar nos ha convertido en el destino favorito para los amantes de los mariscos frescos.",
+            "slogan": "Donde cada plato cuenta una historia del mar",
+            "slogan_subtitulo": "Restaurante Dario, tradición veracruzana desde 1969",
             "telefono": "+52 229 109 6048",
             "whatsapp": "522291096048",
             "email": "restaurantedario1@outlook.com",
@@ -145,6 +155,10 @@ async def get_info_publica(db = Depends(get_mongodb)):
                         info_completa[key] = value
         
         print(f"✅ DEBUG: Información pública preparada")
+        
+        # Guardar en caché por 10 minutos
+        cache.set(cache_key, info_completa, ttl_seconds=600)
+        
         return info_completa
         
     except Exception as e:
@@ -156,82 +170,132 @@ async def get_info_publica(db = Depends(get_mongodb)):
 
 @router.get("/menu-publico")
 async def get_menu_publico():
-    """Obtener menú público del restaurante para el frontend - usando ambas colecciones"""
+    """Obtener menú público del restaurante para el frontend - OPTIMIZADO con caché"""
+    
+    # Intentar obtener del caché primero
+    cache_key = "menu_publico_completo"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        print("✅ Menú servido desde caché")
+        return cached_result
+    
     try:
         from app.mongo_database import get_mongodb
         from bson import ObjectId
+        import time
+        
+        print("📊 Obteniendo menú desde MongoDB...")
+        start_time = time.time()
         
         db = get_mongodb()
-        count = db.categorias_menu.count_documents({})
         
-        if count > 0:
-            # Obtener todas las categorías activas de categorias_menu
-            categorias = list(db.categorias_menu.find({"activo": {"$ne": False}}))
-            
-            menu_publico = []
-            for cat in categorias:
-                # Obtener items de esta categoría desde items_menu
-                items_cursor = db.items_menu.find({"categoria_id": ObjectId(cat["_id"])})
-                items_list = []
-                
-                for item in items_cursor:
-                    if item.get("disponible", True):  # Solo items disponibles
-                        items_list.append({
-                            "id": str(item["_id"]),
-                            "nombre": item.get("nombre", ""),
-                            "descripcion": item.get("descripcion", ""),
-                            "precio": item.get("precio", 0),
-                            "disponible": item.get("disponible", True),
-                            "categoria_id": str(cat["_id"]),
-                            "categoria_nombre": cat.get("nombre", ""),
-                            "orden": item.get("orden", 0)
-                        })
-                
-                # Ordenar items por orden
-                items_list.sort(key=lambda x: x.get("orden", 0))
-                
-                categoria_publico = {
-                    "id": str(cat["_id"]),
-                    "nombre": cat.get("nombre", "Sin nombre"),
-                    "descripcion": cat.get("descripcion", ""),
-                    "imagen_url_original": cat.get("imagen_url_original", ""),
-                    "color": cat.get("color", "#10B981"),
-                    "icono": cat.get("icono", "🍽️"),
-                    "orden": cat.get("orden", 0),
-                    "activo": cat.get("activo", True),
-                    "items": items_list
+        # Usar agregación para hacer todo en una sola consulta eficiente
+        pipeline = [
+            # Filtrar solo categorías activas
+            {"$match": {"activo": {"$ne": False}}},
+            # Ordenar categorías
+            {"$sort": {"orden": 1}},
+            # Hacer lookup (JOIN) con items_menu
+            {
+                "$lookup": {
+                    "from": "items_menu",
+                    "localField": "_id",
+                    "foreignField": "categoria_id",
+                    "as": "items_raw"
                 }
-                
-                menu_publico.append(categoria_publico)
+            },
+            # Proyectar los campos necesarios
+            {
+                "$project": {
+                    "id": {"$toString": "$_id"},
+                    "nombre": 1,
+                    "descripcion": 1,
+                    "imagen_url_original": 1,
+                    "color": {"$ifNull": ["$color", "#10B981"]},
+                    "icono": {"$ifNull": ["$icono", "🍽️"]},
+                    "orden": 1,
+                    "activo": 1,
+                    "items": {
+                        "$map": {
+                            "input": {
+                                "$filter": {
+                                    "input": "$items_raw",
+                                    "as": "item",
+                                    "cond": {"$ifNull": ["$$item.disponible", True]}
+                                }
+                            },
+                            "as": "item",
+                            "in": {
+                                "id": {"$toString": "$$item._id"},
+                                "nombre": "$$item.nombre",
+                                "descripcion": "$$item.descripcion",
+                                "precio": "$$item.precio",
+                                "disponible": {"$ifNull": ["$$item.disponible", True]},
+                                "categoria_id": {"$toString": "$_id"},
+                                "categoria_nombre": "$nombre",
+                                "orden": {"$ifNull": ["$$item.orden", 0]}
+                            }
+                        }
+                    }
+                }
+            },
+            # Ordenar items dentro de cada categoría
+            {
+                "$addFields": {
+                    "items": {
+                        "$sortArray": {
+                            "input": "$items",
+                            "sortBy": {"orden": 1}
+                        }
+                    }
+                }
+            }
+        ]
+        
+        categorias = list(db.categorias_menu.aggregate(pipeline))
+        
+        elapsed_time = time.time() - start_time
+        print(f"⏱️ Consulta completada en {elapsed_time:.2f} segundos")
+        
+        if categorias:
+            total_items = sum(len(cat.get("items", [])) for cat in categorias)
             
-            # Ordenar categorías por orden
-            menu_publico.sort(key=lambda x: x.get("orden", 0))
+            # Limpiar el campo _id de cada categoría
+            for cat in categorias:
+                cat.pop("_id", None)
             
-            total_items = sum(len(cat["items"]) for cat in menu_publico)
-            
-            return {
-                "categorias": menu_publico,
-                "total_categorias": len(menu_publico),
+            result = {
+                "categorias": categorias,
+                "total_categorias": len(categorias),
                 "total_items": total_items,
-                "mensaje": "Menú completo cargado desde MongoDB"
+                "mensaje": "Menú completo cargado desde MongoDB (optimizado)"
             }
         else:
-            return {
+            result = {
                 "categorias": [],
                 "total_categorias": 0,
                 "total_items": 0,
                 "mensaje": "No hay categorías en la base de datos"
             }
+        
+        # Guardar en caché por 5 minutos
+        cache.set(cache_key, result, ttl_seconds=300)
+        print(f"💾 Menú guardado en caché")
+        
+        return result
             
     except Exception as e:
         import traceback
         print(f"❌ ERROR en menu-publico: {str(e)}")
         print(f"❌ TRACEBACK: {traceback.format_exc()}")
+        
+        # En caso de error, intentar devolver del caché aunque esté expirado
+        # o devolver un menú vacío
         return {
             "categorias": [],
             "total_categorias": 0,
             "total_items": 0,
-            "error": str(e),
+            "error": "Error temporal de conexión. Por favor recarga la página.",
             "mensaje": "Error al cargar menú desde MongoDB"
         }
 
