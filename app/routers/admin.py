@@ -827,8 +827,24 @@ async def subir_imagen(
         
         # Redimensionar imagen si es necesario (opcional)
         image = Image.open(io.BytesIO(contents))
+        
+        # Convertir RGBA a RGB si es necesario (para imágenes PNG con transparencia)
+        if image.mode == 'RGBA':
+            # Crear fondo blanco
+            background = Image.new('RGB', image.size, (255, 255, 255))
+            background.paste(image, mask=image.split()[3])  # 3 es el canal alpha
+            image = background
+        elif image.mode != 'RGB':
+            # Convertir cualquier otro modo a RGB
+            image = image.convert('RGB')
+        
         if image.width > 1200 or image.height > 800:
             image.thumbnail((1200, 800), Image.Resampling.LANCZOS)
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='JPEG', quality=85)
+            contents = img_byte_arr.getvalue()
+        else:
+            # Guardar como JPEG incluso si no se redimensiona
             img_byte_arr = io.BytesIO()
             image.save(img_byte_arr, format='JPEG', quality=85)
             contents = img_byte_arr.getvalue()
