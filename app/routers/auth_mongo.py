@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from app.mongo_database import get_mongo_db
 from app.schemas.auth_schemas import *
-from app.services.auth_mongo_simple import AuthService
+from app.services.auth_mongo_service import AuthService  # Cambiar a auth_mongo_service que usa bcrypt
 from datetime import datetime
 from bson import ObjectId
+import bcrypt
 
 router = APIRouter()
 
@@ -40,11 +41,48 @@ async def register_user(user: UsuarioMongoCreate, db = Depends(get_mongo_db)):
 
 @router.post("/login", response_model=Token)
 async def login_user(user_credentials: UsuarioMongoLogin, db = Depends(get_mongo_db)):
-    """Iniciar sesión de usuario"""
-    # Verificar credenciales
-    user = db.usuarios.find_one({"email": user_credentials.email})
+    """Iniciar sesión de usuario - Acepta email o username"""
+    # Buscar usuario por email o por el username (puede ser email)
+    # Primero intentar buscar por email exacto
+    user = db.usuarios.find_one({"email": user_credentials.username})
     
-    if not user or not AuthService.verify_password(user_credentials.password, user["password_hash"]):
+    # Si no se encuentra, intentar buscar username en el email antes del @
+    if not user:
+        # Extraer la parte antes del @ de los emails y comparar
+        user = db.usuarios.find_one({
+            "$expr": {
+                "$eq": [
+                    {"$toLower": {"$arrayElemAt": [{"$split": ["$email", "@"]}, 0]}},
+                    {"$toLower": user_credentials.username}
+                ]
+            }
+        })
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Verificar contraseña con bcrypt directamente
+    password_hash = user.get("password_hash", "")
+    try:
+        # Verificar si el hash es bcrypt
+        if password_hash.startswith('$2b$') or password_hash.startswith('$2a$'):
+            # Usar bcrypt directamente
+            password_correct = bcrypt.checkpw(
+                user_credentials.password.encode('utf-8'),
+                password_hash.encode('utf-8')
+            )
+        else:
+            # Usar el método de AuthService para hashes antiguos
+            password_correct = AuthService.verify_password(user_credentials.password, password_hash)
+    except Exception as e:
+        print(f"❌ Error verificando contraseña: {e}")
+        password_correct = False
+    
+    if not password_correct:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas",

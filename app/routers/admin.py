@@ -723,6 +723,95 @@ async def actualizar_item(
             detail=f"Error al actualizar item: {str(e)}"
         )
 
+@router.put("/categorias/{categoria_id}/reordenar-items", response_model=dict)
+async def reordenar_items(
+    categoria_id: str,
+    body: dict,
+    current_user: UsuarioMongo = Depends(AuthService.get_current_admin_user),
+    db = Depends(get_mongo_db)
+):
+    """Reordenar items de una categoría mediante drag & drop"""
+    try:
+        # Validar que la categoría existe
+        categoria = db.categorias_menu.find_one({"_id": ObjectId(categoria_id)})
+        if not categoria:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Categoría no encontrada"
+            )
+        
+        # Obtener el nuevo orden de items
+        items_nombres = body.get("items", [])
+        if not items_nombres or not isinstance(items_nombres, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Se requiere un array de nombres de items"
+            )
+        
+        print(f"🔄 DEBUG: Reordenando {len(items_nombres)} items en categoría '{categoria['nombre']}'")
+        print(f"📝 DEBUG: Nuevo orden: {items_nombres}")
+        
+        # Actualizar el orden en la colección items_menu
+        items_actualizados = 0
+        for index, nombre in enumerate(items_nombres):
+            result = db.items_menu.update_one(
+                {
+                    "categoria_id": ObjectId(categoria_id),
+                    "nombre": nombre
+                },
+                {"$set": {"orden": index}}
+            )
+            if result.modified_count > 0:
+                items_actualizados += 1
+        
+        print(f"✅ DEBUG: {items_actualizados} items actualizados en colección items_menu")
+        
+        # También actualizar el orden en el array embebido si existe
+        items_array = categoria.get("items", [])
+        if items_array:
+            # Crear un diccionario de items por nombre para reordenar
+            items_dict = {item["nombre"]: item for item in items_array}
+            
+            # Reconstruir el array en el nuevo orden
+            items_reordenados = []
+            for index, nombre in enumerate(items_nombres):
+                if nombre in items_dict:
+                    item = items_dict[nombre]
+                    item["orden"] = index
+                    items_reordenados.append(item)
+            
+            # Actualizar el array completo en la categoría
+            if items_reordenados:
+                result_array = db.categorias_menu.update_one(
+                    {"_id": ObjectId(categoria_id)},
+                    {"$set": {"items": items_reordenados}}
+                )
+                if result_array.modified_count > 0:
+                    print(f"✅ DEBUG: Array embebido actualizado con {len(items_reordenados)} items")
+        
+        # Limpiar caché del menú
+        limpiar_cache_menu()
+        
+        print(f"🎉 DEBUG: Reordenamiento completado exitosamente")
+        
+        return {
+            "status": "success",
+            "message": "Orden de items actualizado exitosamente",
+            "items_actualizados": items_actualizados,
+            "categoria": categoria["nombre"]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ DEBUG: Error al reordenar items: {str(e)}")
+        import traceback
+        print(f"❌ TRACEBACK: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al reordenar items: {str(e)}"
+        )
+
 @router.delete("/categorias/{categoria_id}/items/{item_nombre}", response_model=dict)
 async def eliminar_item(
     categoria_id: str,

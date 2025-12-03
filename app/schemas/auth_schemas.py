@@ -13,7 +13,7 @@ class UsuarioMongoCreate(UsuarioMongoBase):
     password: str
 
 class UsuarioMongoLogin(BaseModel):
-    email: EmailStr
+    username: str  # Puede ser email o nombre de usuario
     password: str
 
 class UsuarioMongo(UsuarioMongoBase):
